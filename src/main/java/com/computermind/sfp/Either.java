@@ -1,13 +1,16 @@
 package com.computermind.sfp;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
+
+import static java.util.stream.Collectors.toList;
 
 public abstract class Either<L, R> {
     public static <A, B> Either<A, B> maybe(final Optional<B> x, final A whenFail) {
@@ -39,34 +42,59 @@ public abstract class Either<L, R> {
     }
 
     public static <A, B> Either<A, B> ofNullable(final B nullableValue, final A leftValue) {
-        return (nullableValue == null) ? left(leftValue) : right(nullableValue);
+        return nullableValue == null ? left(leftValue) : right(nullableValue);
     }
 
     public static <A, B> Stream<A> lefts(final Stream<Either<A, B>> s) {
-        return s.filter(Either::isLeft).map((Function<? super Either<A, B>, ? extends A>) Either::getLeft);
+        return s.filter(Either::isLeft).map(Either::getLeft);
     }
 
     public static <A, B> Stream<B> rights(final Stream<Either<A, B>> s) {
-        return s.filter(Either::isRight).map((Function<? super Either<A, B>, ? extends B>) Either::getRight);
+        return s.filter(Either::isRight).map(Either::getRight);
     }
 
-    public static <B> Either<String, B> safe(final Supplier<B> f) {
+    public static <A, B> Either<A, Stream<B>> sequence(final Stream<Either<A, B>> xs) {
+        final AtomicReference<A> failed = new AtomicReference<>(null);
+        final List<B> rs = xs.takeWhile(x -> {
+            if (x.isLeft()) {
+                failed.set(x.getLeft());
+                return false;
+            }
+            return true;
+        }).map(Either::getRight).collect(toList());
+        return failed.get() == null ? right(rs.stream()) : left(failed.get());
+    }
+
+    public static <A> Either<Exception, A> unsafe(final UnsafeF0<A> f) {
         try {
             return right(f.get());
-        } catch (RuntimeException ex) {
-            return left(ex.getMessage(), ex);
+        } catch (Exception e) {
+            return left(e);
         }
     }
 
-    public static <A, B> Either<A, List<B>> sequence(final List<Either<A, B>> xs) {
-        final List<B> rs = new ArrayList<>();
-        for (final Either<A, B> x : xs) {
-            if (x.isLeft()) {
-                return left(x.getLeft());
+    public static <A, B> Function<A, Either<Exception, B>> unsafe(final UnsafeF1<A, B> f) {
+        return a -> {
+            try {
+                return right(f.apply(a));
+            } catch (Exception e) {
+                return left(e);
             }
-            rs.add(x.getRight());
-        }
-        return right(rs);
+        };
+    }
+
+    public static <A, B, C> BiFunction<A, B, Either<Exception, C>> unsafe(final UnsafeF2<A, B, C> f) {
+        return (a, b) -> {
+            try {
+                return right(f.apply(a, b));
+            } catch (Exception e) {
+                return left(e);
+            }
+        };
+    }
+
+    public Either<String, R> lstring() {
+        return mapLeft(e -> e instanceof Exception ? ((Exception) e).getLocalizedMessage() : Objects.toString(e));
     }
 
     public abstract boolean isLeft();
@@ -130,6 +158,10 @@ public abstract class Either<L, R> {
 
     public final <G> Either<L, G> bind(final Function<R, Either<L, G>> k) {
         return isLeft() ? left(getLeft()) : k.apply(getRight());
+    }
+
+    public final <G> Either<L, G> bind(final Supplier<Either<L, G>> k) {
+        return isLeft() ? left(getLeft()) : k.get();
     }
 
     public final Either<L, R> join(final Either<L, Either<L, R>> w) {
